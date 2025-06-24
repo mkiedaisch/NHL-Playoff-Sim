@@ -1,149 +1,140 @@
+
 import streamlit as st
+import pandas as pd
+import numpy as np
 import random
 import os
 from PIL import Image
-import pandas as pd
+import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="2025 NHL Playoff Simulator", layout="wide")
+# Setup
+st.set_page_config(page_title="🏒 NHL 2025 Playoff Simulator", layout="wide")
+st.title("🏒 2025 NHL Playoff Simulator")
+st.caption("Simulates full bracket using Elo + Monte Carlo. Includes bracket results, win percentages, Elo trends, and downloadable data.")
 
-# --- Data ---
-teams = [
-    "winnipeg_jets", "st_louis_blues", "dallas_stars", "colorado_avalanche",
-    "vegas_golden_knights", "minnesota_wild", "los_angeles_kings", "edmonton_oilers",
-    "toronto_maple_leafs", "ottawa_senators", "florida_panthers", "tampa_bay_lightning",
-    "washington_capitals", "montreal_canadiens", "new_jersey_devils", "carolina_hurricanes"
+# Teams and matchups
+first_round = [
+    ("Winnipeg Jets", "St. Louis Blues"),
+    ("Dallas Stars", "Colorado Avalanche"),
+    ("Vegas Golden Knights", "Minnesota Wild"),
+    ("Los Angeles Kings", "Edmonton Oilers"),
+    ("Toronto Maple Leafs", "Ottawa Senators"),
+    ("Florida Panthers", "Tampa Bay Lightning"),
+    ("Washington Capitals", "Montreal Canadiens"),
+    ("New Jersey Devils", "Carolina Hurricanes"),
 ]
 
-elo = {
-    team: 1500 + random.randint(-150, 150)
-    for team in teams
-}
+teams = sorted(set([team for series in first_round for team in series]))
+elo = {team: random.randint(1400, 1700) for team in teams}
+LOGO_DIR = "assets/logos"
 
-team_names = {
-    "winnipeg_jets": "Winnipeg Jets",
-    "st_louis_blues": "St. Louis Blues",
-    "dallas_stars": "Dallas Stars",
-    "colorado_avalanche": "Colorado Avalanche",
-    "vegas_golden_knights": "Vegas Golden Knights",
-    "minnesota_wild": "Minnesota Wild",
-    "los_angeles_kings": "Los Angeles Kings",
-    "edmonton_oilers": "Edmonton Oilers",
-    "toronto_maple_leafs": "Toronto Maple Leafs",
-    "ottawa_senators": "Ottawa Senators",
-    "florida_panthers": "Florida Panthers",
-    "tampa_bay_lightning": "Tampa Bay Lightning",
-    "washington_capitals": "Washington Capitals",
-    "montreal_canadiens": "Montreal Canadiens",
-    "new_jersey_devils": "New Jersey Devils",
-    "carolina_hurricanes": "Carolina Hurricanes"
-}
+# Helper
+def logo_img(team):
+    path = os.path.join(LOGO_DIR, team.lower().replace(" ", "_").replace(".", "") + ".png")
+    return Image.open(path) if os.path.exists(path) else None
 
-# --- Functions ---
-def win_prob(team1, team2):
-    rating1 = elo[team1]
-    rating2 = elo[team2]
-    return 1 / (1 + 10 ** ((rating2 - rating1) / 400))
+# Simulate a best-of-7 series
+def simulate_series(team1, team2, elo_dict):
+    elo1, elo2 = elo_dict[team1], elo_dict[team2]
+    p1 = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
+    wins1 = wins2 = 0
+    while wins1 < 4 and wins2 < 4:
+        if random.random() < p1:
+            wins1 += 1
+        else:
+            wins2 += 1
+    winner = team1 if wins1 > wins2 else team2
+    return winner, (team1, wins1, team2, wins2)
 
-def simulate_series(team1, team2):
-    wins = {team1: 0, team2: 0}
-    while wins[team1] < 4 and wins[team2] < 4:
-        prob = win_prob(team1, team2)
-        winner = team1 if random.random() < prob else team2
-        wins[winner] += 1
-    return team1 if wins[team1] == 4 else team2, f"{wins[team1]}–{wins[team2]}"
+# Full bracket simulation + Elo updates
+def simulate_bracket(update_elo=False):
+    current_elo = elo.copy()
+    rounds = []
+    matchups = first_round[:]
 
-def simulate_bracket():
-    round1 = [
-        ("winnipeg_jets", "st_louis_blues"),
-        ("dallas_stars", "colorado_avalanche"),
-        ("vegas_golden_knights", "minnesota_wild"),
-        ("los_angeles_kings", "edmonton_oilers"),
-        ("toronto_maple_leafs", "ottawa_senators"),
-        ("florida_panthers", "tampa_bay_lightning"),
-        ("washington_capitals", "montreal_canadiens"),
-        ("new_jersey_devils", "carolina_hurricanes")
-    ]
+    for rnd in range(4):
+        results = []
+        winners = []
+        for t1, t2 in matchups:
+            winner, result = simulate_series(t1, t2, current_elo)
+            results.append(result)
+            winners.append(winner)
+            if update_elo:
+                change = 25
+                current_elo[winner] += change
+                current_elo[t1 if t1 != winner else t2] -= change
+        rounds.append(results)
+        matchups = list(zip(winners[::2], winners[1::2]))
+    return rounds, winners[-1], current_elo
 
-    r1_winners = []
-    series_scores = []
-    for t1, t2 in round1:
-        winner, score = simulate_series(t1, t2)
-        r1_winners.append(winner)
-        series_scores.append((t1, t2, winner, score))
+# Monte Carlo simulation
+def run_monte_carlo(n=1000):
+    win_counts = {team: 0 for team in teams}
+    elo_tracking = {team: [] for team in teams}
+    for _ in range(n):
+        _, champ, final_elo = simulate_bracket(update_elo=True)
+        win_counts[champ] += 1
+        for team in teams:
+            elo_tracking[team].append(final_elo[team])
+    df = pd.DataFrame.from_dict(win_counts, orient="index", columns=["Cup Wins"])
+    df["Win %"] = (df["Cup Wins"] / n * 100).round(2)
+    df = df.sort_values("Win %", ascending=False)
+    return df, elo_tracking
 
-    round2 = [(r1_winners[i], r1_winners[i+1]) for i in range(0, 8, 2)]
-    r2_winners = []
-    for t1, t2 in round2:
-        winner, score = simulate_series(t1, t2)
-        r2_winners.append(winner)
-        series_scores.append((t1, t2, winner, score))
+# UI
+user_pick = st.sidebar.selectbox("Which team do you think wins the Cup?", teams)
+if st.sidebar.button("Run Simulation"):
+    st.session_state["results"], st.session_state["champ"], _ = simulate_bracket()
+if st.sidebar.button("Run 1000 Simulations"):
+    st.session_state["summary"], st.session_state["elo_series"] = run_monte_carlo()
 
-    round3 = [(r2_winners[0], r2_winners[1]), (r2_winners[2], r2_winners[3])]
-    r3_winners = []
-    for t1, t2 in round3:
-        winner, score = simulate_series(t1, t2)
-        r3_winners.append(winner)
-        series_scores.append((t1, t2, winner, score))
+# Bracket display
+if "results" in st.session_state:
+    st.subheader("🧊 One Bracket Simulation")
+    cols = st.columns(5)
+    round_names = ["Round 1", "Round 2", "Conference Finals", "Stanley Cup Final", "🏆 Winner"]
 
-    final = (r3_winners[0], r3_winners[1])
-    champ, score = simulate_series(final[0], final[1])
-    series_scores.append((final[0], final[1], champ, score))
+    for i, col in enumerate(cols):
+        col.markdown(f"**{round_names[i]}**")
+        if i < 4:
+            for matchup in st.session_state["results"][i]:
+                logo1, logo2 = logo_img(matchup[0]), logo_img(matchup[2])
+                if logo1 and logo2:
+                    col.image([logo1, logo2], width=50)
+                col.caption(f"{matchup[0]} ({matchup[1]}) vs {matchup[2]} ({matchup[3]})")
+        else:
+            champ = st.session_state["champ"]
+            logo = logo_img(champ)
+            if logo:
+                col.image(logo, width=80)
+            col.success(f"{champ} win the Stanley Cup!")
 
-    return champ, series_scores
+# Monte Carlo results
+if "summary" in st.session_state:
+    st.subheader("📊 Cup Win Probabilities (1000 Simulations)")
+    df = st.session_state["summary"]
+    def highlight_team(x):
+        return ["background-color: lightgreen" if x.name == user_pick else "" for _ in x]
+    st.dataframe(df.style.apply(highlight_team, axis=1), height=500)
 
-def get_logo(team_id):
-    path = f"assets/logos/{team_id}.png"
-    if os.path.exists(path):
-        return Image.open(path)
-    return None
+    st.download_button("📥 Download Simulation Data", df.to_csv().encode("utf-8"), "cup_win_sim.csv", "text/csv")
 
-# --- UI ---
-st.title("🏆 2025 NHL Playoff Simulator")
-st.markdown("Simulates the Stanley Cup Playoffs using Elo + Monte Carlo. Select a team, run the sim, and view the bracket!")
+    st.markdown("#### 🧠 Finance Insight")
+    st.info("This Monte Carlo sim uses Elo ratings as dynamic predictive priors. Similar to portfolio value-at-risk (VaR), it models repeated uncertain outcomes over time, providing probabilistic confidence in forecasted champions.")
 
-team_pick = st.selectbox("Which team do you think will win the Cup?", [team_names[t] for t in teams])
-run_button = st.button("Run Simulation")
+    st.markdown("#### 📉 Elo Distribution (After 1000 Sims)")
+    fig, ax = plt.subplots(figsize=(10, 4))
+    for team, elos in st.session_state["elo_series"].items():
+        ax.plot(sorted(elos)[-1:], "o", label=team)
+    ax.set_ylabel("Final Elo Rating")
+    ax.set_xticks([])
+    ax.legend(fontsize=7)
+    st.pyplot(fig)
 
-if run_button:
-    cup_counts = {team: 0 for team in teams}
-    all_results = []
-
-    for _ in range(1000):
-        champ, _ = simulate_bracket()
-        cup_counts[champ] += 1
-
-    st.subheader("📉 Stanley Cup Win Probabilities (1000 Simulations)")
-    df = pd.DataFrame([
-        {
-            "Team": team_names[team],
-            "Win %": round(100 * count / 1000, 1)
-        } for team, count in sorted(cup_counts.items(), key=lambda x: -x[1])
-    ])
-
-    highlight_team = [team for team, name in team_names.items() if name == team_pick][0]
-    df_display = df.style.apply(lambda x: ['background-color: lightgreen' if v == team_names[highlight_team] else '' for v in x], subset=['Team'])
-    st.dataframe(df_display, use_container_width=True)
-
-    top_team = max(cup_counts, key=cup_counts.get)
-    st.success(f"🏆 Most likely Stanley Cup winner: **{team_names[top_team]}** ({round(100 * cup_counts[top_team] / 1000, 1)}%)")
-
-# Single sim
-if st.button("Run Single Bracket Simulation"):
-    champ, bracket = simulate_bracket()
-    st.subheader("🧊 Single Simulation Bracket")
-
-    for round_num in range(1, 5):
-        st.markdown(f"### Round {round_num}")
-        for match in bracket[(round_num - 1)*4 : round_num*4]:
-            t1, t2, winner, score = match
-            col1, col2 = st.columns([1, 4])
-            with col1:
-                logo1 = get_logo(t1)
-                logo2 = get_logo(t2)
-                if logo1: st.image(logo1, width=50)
-                if logo2: st.image(logo2, width=50)
-            with col2:
-                st.write(f"**{team_names[t1]}** vs **{team_names[t2]}**")
-                st.write(f"✅ Winner: **{team_names[winner]}** ({score})")
-
-    st.success(f"🏆 Stanley Cup Champion in this simulation: **{team_names[champ]}**")
+    st.markdown("#### 🪄 Cup Win % Histogram")
+    fig2, ax2 = plt.subplots()
+    ax2.bar(df.index, df["Win %"])
+    ax2.set_ylabel("Win %")
+    ax2.set_title("Distribution of Stanley Cup Wins Across 1000 Simulations")
+    plt.xticks(rotation=90)
+    st.pyplot(fig2)
